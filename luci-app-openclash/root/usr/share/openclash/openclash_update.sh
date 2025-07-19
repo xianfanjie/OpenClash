@@ -152,9 +152,9 @@ if [ -n "$OP_CV" ] && [ -n "$OP_LV" ] && version_compare "$OP_CV" "$OP_LV" && [ 
                continue
             else
                if [ -x "/bin/opkg" ]; then
-                  LOG_OUT "Error:【OpenClash - v$LAST_VER】pre update test failed after 3 attempts, the file is saved in /tmp/openclash.ipk, please try to update manually with【opkg install /tmp/openclash.ipk】"
+                  LOG_OUT "Error:【OpenClash - v$LAST_VER】Pre update test failed after 3 attempts, the file is saved in /tmp/openclash.ipk, please try to update manually with【opkg install /tmp/openclash.ipk】"
                elif [ -x "/usr/bin/apk" ]; then
-                  LOG_OUT "Error:【OpenClash - v$LAST_VER】pre update test failed after 3 attempts, the file is saved in /tmp/openclash.apk, please try to update manually with【apk add -q --force-overwrite --clean-protected --allow-untrusted /tmp/openclash.apk】"
+                  LOG_OUT "Error:【OpenClash - v$LAST_VER】Pre update test failed after 3 attempts, the file is saved in /tmp/openclash.apk, please try to update manually with【apk add -q --force-overwrite --clean-protected --allow-untrusted /tmp/openclash.apk】"
                fi
                if [ "$(uci -q get openclash.config.restart)" -eq 1 ]; then
                   uci -q set openclash.config.restart=0
@@ -194,6 +194,26 @@ START_LOG="/tmp/openclash_start.log"
 LOG_FILE="/tmp/openclash.log"
 LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
 
+UPDATE_LOCK="/tmp/lock/openclash_update_install.lock"
+mkdir -p /tmp/lock
+
+set_update_lock() {
+   exec 879>"$UPDATE_LOCK" 2>/dev/null
+   flock -n 879 2>/dev/null
+}
+
+del_update_lock() {
+   flock -u 879 2>/dev/null
+   rm -rf "$UPDATE_LOCK" 2>/dev/null
+}
+
+if ! set_update_lock; then
+   echo "Update process is already running, exiting..."
+   exit 1
+fi
+
+trap 'del_update_lock; exit' INT TERM EXIT
+
 LOG_OUT()
 {
     if [ -n "${1}" ]; then
@@ -227,11 +247,6 @@ check_install_success()
 
 uci -q set openclash.config.enable=0
 uci -q commit openclash
-
-if [ -x "/bin/opkg" ]; then
-   LOG_OUT "Tip: Uninstalling the old version, please do not refresh the page or do other operations..."
-   opkg remove --force-depends --force-remove luci-app-openclash
-fi
 
 install_retry_count=0
 max_install_retries=3
@@ -278,6 +293,8 @@ else
     fi
     SLOG_CLEAN
 fi
+
+del_update_lock
 EOF
    chmod 4755 /tmp/openclash_update.sh
 
@@ -298,7 +315,7 @@ EOF
       
       ubus call service add '{"name":"openclash_update","instances":{"update":{"command":["/tmp/openclash_update.sh"],"stdout":true,"stderr":true,"env":{"LAST_VER":"'"$LAST_VER"'"}}}}' >/dev/null 2>&1
       
-      sleep 1
+      sleep 3
       
       if ubus call service list '{"name":"openclash_update"}' 2>/dev/null | jsonfilter -e '@.openclash_update.instances.*.running' | grep -q 'true'; then
          service_started=true
