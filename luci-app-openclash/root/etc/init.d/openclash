@@ -477,11 +477,13 @@ do_run_file()
       chnr6_path="/etc/openclash/china_ip6_route.ipset"
       geosite_path="/etc/openclash/GeoSite.dat"
       geoip_path="/etc/openclash/GeoIP.dat"
+      lgbm_path="/etc/openclash/Model.bin"
       mv "/tmp/etc/openclash/Country.mmdb" "$ipdb_path"
       mv "/tmp/etc/openclash/china_ip_route.ipset" "$chnr_path"
       mv "/tmp/etc/openclash/china_ip6_route.ipset" "$chnr6_path"
       mv "/tmp/etc/openclash/GeoSite.dat" "$geosite_path"
       mv "/tmp/etc/openclash/GeoIP.dat" "$geoip_path"
+      mv "/tmp/etc/openclash/Model.bin" "$lgbm_path"
       mv "/tmp/etc/openclash/core/" "/etc/openclash"
       if [ "$CACHE_PATH" != "/tmp/etc/openclash/cache.db" ]; then
          rm -rf "/tmp/etc/openclash"
@@ -493,11 +495,13 @@ do_run_file()
       chnr6_path="/tmp/etc/openclash/china_ip6_route.ipset"
       geosite_path="/tmp/etc/openclash/GeoSite.dat"
       geoip_path="/tmp/etc/openclash/GeoIP.dat"
+      lgbm_path="/tmp/etc/openclash/Model.bin"
       [ ! -h "/etc/openclash/Country.mmdb" ] && mv "/etc/openclash/Country.mmdb" "$ipdb_path"
       [ ! -h "/etc/openclash/china_ip_route.ipset" ] && mv "/etc/openclash/china_ip_route.ipset" "$chnr_path"
       [ ! -h "/etc/openclash/china_ip6_route.ipset" ] && mv "/etc/openclash/china_ip6_route.ipset" "$chnr6_path"
       [ ! -h "/etc/openclash/GeoSite.dat" ] && mv "/etc/openclash/GeoSite.dat" "$geosite_path"
       [ ! -h "/etc/openclash/GeoIP.dat" ] && mv "/etc/openclash/GeoIP.dat" "$geoip_path"
+      [ ! -h "/etc/openclash/Model.bin" ] && mv "/etc/openclash/Model.bin" "$lgbm_path"
       mv "/etc/openclash/core/" "/tmp/etc/openclash"
    fi
 
@@ -560,6 +564,10 @@ do_run_file()
 
    [ -f "$geoip_path" ] && [ "$small_flash_memory" = "1" ] && {
       ln -s "$geoip_path" /etc/openclash/GeoIP.dat
+   }
+
+   [ -f "$lgbm_path" ] && [ "$small_flash_memory" = "1" ] && {
+      ln -s "$lgbm_path" /etc/openclash/Model.bin
    }
 
    [ -f "$chnr_path" ] && [ "$small_flash_memory" = "1" ] && {
@@ -1508,6 +1516,7 @@ if [ -n "$FW4" ]; then
 
       nft add rule inet fw4 openclash ip protocol tcp counter redirect to "$proxy_port"
       nft 'add rule inet fw4 dstnat meta nfproto {ipv4} ip protocol tcp counter jump openclash'
+
       if [ -z "$en_mode_tun" ]; then
          #udp
          if [ "$enable_udp_proxy" -eq 1 ]; then
@@ -2024,6 +2033,13 @@ if [ -n "$FW4" ]; then
             LOG_OUT "Warning: Can't Settting Only Intranet Allowed Function, Get IPv6 WAN Interfaces error, Please Verify The Firewall's WAN Zone Name is wan, Ignore This IF The Device Does not Have a WAN Interfaces..."
          fi
       fi
+   fi
+
+   #icmp
+   if [ "$en_mode" = "fake-ip" ]; then
+      nft insert rule inet fw4 input position 0 ip protocol icmp icmp type echo-request ip daddr { $fakeip_range } counter reject comment \"OpenClash ICMP INPUT REJECT\"
+      nft insert rule inet fw4 forward position 0 ip protocol icmp icmp type echo-request ip daddr { $fakeip_range } counter reject comment \"OpenClash ICMP FORWARD REJECT\"
+      nft insert rule inet fw4 output position 0 ip protocol icmp icmp type echo-request ip daddr { $fakeip_range } $noowner counter reject comment \"OpenClash ICMP OUTPUT REJECT\"
    fi
 fi
 
@@ -2763,6 +2779,13 @@ if [ -z "$FW4" ]; then
          fi
       fi
    fi
+
+   #icmp
+   if [ "$en_mode" = "fake-ip" ]; then
+      iptables -t filter -I INPUT   -p icmp --icmp-type echo-request -d "$fakeip_range" -j REJECT --reject-with icmp-admin-prohibited -m comment --comment "OpenClash ICMP INPUT REJECT"
+      iptables -t filter -I FORWARD -p icmp --icmp-type echo-request -d "$fakeip_range" -j REJECT --reject-with icmp-admin-prohibited -m comment --comment "OpenClash ICMP FORWARD REJECT"
+      iptables -t filter -I OUTPUT  -p icmp --icmp-type echo-request -d "$fakeip_range" $noowner -j REJECT --reject-with icmp-admin-prohibited -m comment --comment "OpenClash ICMP OUTPUT REJECT"
+   fi
 fi
 
 #端口转发
@@ -2801,7 +2824,7 @@ revert_firewall()
    ip -6 route del default dev utun table "$PROXY_ROUTE_TABLE"
    
    if [ -n "$FW4" ]; then
-      for nft in "input" "forward" "dstnat" "srcnat" "nat_output" "mangle_prerouting" "mangle_output"; do
+      for nft in "input" "forward" "output" "dstnat" "srcnat" "nat_output" "mangle_prerouting" "mangle_output"; do
          local handles=$(nft -a list chain inet fw4 ${nft} |grep -E "openclash|OpenClash" |awk -F '# handle ' '{print$2}')
          for handle in $handles; do
             nft delete rule inet fw4 ${nft} handle ${handle}
@@ -2816,7 +2839,7 @@ revert_firewall()
          nft delete set inet fw4 handle ${handle}
       done
    else
-      for ipt in "iptables -nvL INPUT" "iptables -nvL FORWARD" "iptables -nvL POSTROUTING -t nat" "iptables -nvL OUTPUT -t nat" "iptables -nvL OUTPUT -t mangle" "iptables -nvL PREROUTING -t nat" "iptables -nvL PREROUTING -t mangle" "ip6tables -nvL PREROUTING -t mangle" "ip6tables -nvL OUTPUT -t mangle" "ip6tables -nvL PREROUTING -t nat" "ip6tables -nvL INPUT" "ip6tables -nvL POSTROUTING -t nat" "ip6tables -nvL FORWARD" "ip6tables -nvL OUTPUT -t nat"; do
+      for ipt in "iptables -nvL INPUT" "iptables -nvL FORWARD" "iptables -nvL OUTPUT" "iptables -nvL POSTROUTING -t nat" "iptables -nvL OUTPUT -t nat" "iptables -nvL OUTPUT -t mangle" "iptables -nvL PREROUTING -t nat" "iptables -nvL PREROUTING -t mangle" "ip6tables -nvL PREROUTING -t mangle" "ip6tables -nvL OUTPUT -t mangle" "ip6tables -nvL PREROUTING -t nat" "ip6tables -nvL INPUT" "ip6tables -nvL POSTROUTING -t nat" "ip6tables -nvL FORWARD" "ip6tables -nvL OUTPUT -t nat"; do
          for comment in "openclash" "OpenClash"; do
             local lines=$($ipt |sed 1,2d |sed -n "/${comment}/=" 2>/dev/null |sort -rn)
             if [ -n "$lines" ]; then
@@ -2935,6 +2958,15 @@ get_config()
    geoip_custom_url=$(uci -q get openclash.config.geoip_custom_url || echo 0)
    geosite_custom_url=$(uci -q get openclash.config.geosite_custom_url || echo 0)
    geoasn_custom_url=$(uci -q get openclash.config.geoasn_custom_url || echo 0)
+   auto_smart_switch=$(uci -q get openclash.config.auto_smart_switch || echo 0)
+   lgbm_auto_update=$(uci -q get openclash.config.lgbm_auto_update || echo 0)
+   lgbm_custom_url=$(uci -q get openclash.config.lgbm_custom_url || echo "https://github.com/vernesong/mihomo/releases/download/LightGBM-Model/Model.bin")
+   lgbm_update_interval=$(uci -q get openclash.config.lgbm_update_interval || echo 72)
+   smart_collect=$(uci -q get openclash.config.smart_collect || echo 0)
+   smart_collect_size=$(uci -q get openclash.config.smart_collect_size || echo 100)
+   smart_collect_rate=$(uci -q get openclash.config.smart_collect_rate || echo 1)
+   smart_strategy=$(uci -q get openclash.config.smart_strategy || echo "sticky-sessions")
+
    [ -z "$dns_port" ] && dns_port=7874 && uci -q set openclash.config.dns_port=7874
    uci -q commit openclash
 }
@@ -2969,11 +3001,13 @@ start_service()
          "$interface_name" "$enable_tcp_concurrent" "$core_type" "$append_default_dns" "$enable_meta_sniffer_pure_ip"\
          "$find_process_mode" "$fakeip_range" "$global_client_fingerprint" "$ipv6_mode" "$stack_type_v6" "$enable_unified_delay"\
          "$enable_respect_rules" "$custom_fakeip_filter_mode" "$iptables_compat" "$disable_quic_go_gso" "$cors_allow"\
-         "$geo_custom_url" "$geoip_custom_url" "$geosite_custom_url" "$geoasn_custom_url"
+         "$geo_custom_url" "$geoip_custom_url" "$geosite_custom_url" "$geoasn_custom_url"\
+         "$lgbm_auto_update" "$lgbm_custom_url" "$lgbm_update_interval" "$smart_collect" "$smart_collect_size"
          
          /usr/share/openclash/yml_rules_change.sh \
          "$rule_source" "$enable_custom_clash_rules" "$TMP_CONFIG_FILE"\
-         "$enable_rule_proxy" "$CONFIG_NAME" "$router_self_proxy" "$lan_ip" "$enable_redirect_dns" "$en_mode"
+         "$enable_rule_proxy" "$CONFIG_NAME" "$router_self_proxy" "$lan_ip" "$enable_redirect_dns" "$en_mode"\
+         "$auto_smart_switch" "$smart_collect" "$smart_collect_rate" "$smart_strategy"
          
          #Custom overwrite
          if [ -f "/etc/openclash/custom/openclash_custom_overwrite.sh" ]; then
@@ -3130,7 +3164,7 @@ start_watchdog()
 reload_service()
 {
    enable=$(uci -q get openclash.config.enable)
-   MAX_RELOAD=4
+   MAX_RELOAD=10
    if pidof clash >/dev/null && [ "$enable" == "1" ] && [ "$1" == "firewall" ]; then
       NOW_TS=$(date +%s)
       LAST_LINE=$(grep "Reload OpenClash Firewall Rules...$" "$LOG_FILE" | tail -n 1)
